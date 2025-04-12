@@ -1,44 +1,59 @@
 import asyncio
 import json
+from typing import Dict
 import websockets
 from game import Game
 
 game = Game()
-connected = {}
+connected: Dict[str, websockets.ClientConnection] = {}
+
+async def broadcast_all():
+    to_remove = []
+    for pid, ws in connected.items():
+        try:
+            state = game.get_state(pid)
+            await ws.send(json.dumps(state))
+        except:
+            to_remove.append(pid)
+    for pid in to_remove:
+        game.remove_player(pid)
+        connected.pop(pid, None)
+
 
 async def handle_client(ws):
-    player_id = f"player{len(connected) + 1}"
-    print(f"New connection: {player_id}")
+    player_id = game.add_player()
     connected[player_id] = ws
-    game.add_player(player_id)
+    print(f"{player_id} connected")
 
     await ws.send(json.dumps(game.get_init()))
 
     try:
-        while True:
-            data = await ws.recv()
-            msg = json.loads(data)
-            print(f"Received message from {player_id}: {msg}")
+        async for message in ws:
+            msg = json.loads(message)
             if msg["type"] == "move":
                 game.move_player(player_id, msg["dir"])
-
-            state = game.get_state(player_id)
-            await asyncio.gather(*[
-                conn.send(json.dumps(state))
-                for conn in connected.values()
-            ])
     except websockets.exceptions.ConnectionClosed:
-        print(f"Connection closed for {player_id}")
+        pass
+
+    finally:
         game.remove_player(player_id)
         connected.pop(player_id, None)
+        print(f"{player_id} disconnected")
+
+
+async def game_loop():
+    while True:
+        game.move_enemies()
+        await broadcast_all()
+        await asyncio.sleep(0.10)
+
 
 async def main():
     print("Server running at ws://0.0.0.0:8765")
+    asyncio.create_task(game_loop())
     async with websockets.serve(handle_client, "0.0.0.0", 8765):
         await asyncio.Future()
 
+
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("Server stopped.")
+    asyncio.run(main())
